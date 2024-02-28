@@ -1,0 +1,85 @@
+- name: install and configure postgres
+  hosts: localhost
+  become: yes
+  tasks:
+    # sudo sh -c 'echo "deb https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" > /etc/apt/sources.list.d/pgdg.list'
+    - name: Create the file repository configuration
+      command: sudo sh -c 'echo "deb https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" > /etc/apt/sources.list.d/pgdg.list'
+
+    # wget --quiet -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | sudo apt-key add -
+    - name: Download the repo signing key
+      ansible.builtin.get_url:
+        url: "https://www.postgresql.org/media/keys/ACCC4CF8.asc"
+        dest: "/tmp/postgresql_key.asc"
+
+    - name: import the key to apt
+      become: yes
+      ansible.builtin.apt_key:
+        file: "/tmp/postgresql_key.asc"
+
+    # sudo apt-get -y install postgresql
+    - name: Install the latest version of PostgreSQL
+      apt:
+        name: postgresql
+        state: present
+        update_cache: yes # sudo apt-get update
+        force_apt_get: yes
+
+    # Installation should be done here
+    ##################################
+
+    - name: Allow postgres to use a max of 25% of RAM
+      lineinfile:
+        path: /etc/postgresql/16/main/postgresql.conf
+        regexp: '^shared_buffers\s*=.*$'
+        line: "shared_buffers = 246MB"
+        state: present
+
+    - name: Change password encryption algo to scram-sha-256
+      lineinfile:
+        path: /etc/postgresql/16/main/postgresql.conf
+        regexp: '^password_encryption\s*=.*$'
+        line: "password_encryption = scram-sha-256"
+        state: present
+
+    - name: Install psycopg2
+      ansible.builtin.pip:
+        name: psycopg2-binary
+        state: present
+
+    - name: Install setfacl package
+      apt:
+        name: acl
+        state: present
+
+    - name: Create a new user 'myuser'
+      command: sudo -u postgres psql -c "CREATE USER myuser CREATEDB CREATEROLE PASSWORD 'myuser';"
+
+    - name: Create a new db owned by myuser
+      command: sudo -u postgres psql -c "CREATE DATABASE mydb OWNER myuser;"
+
+    - name: Change connection type for "myuser"
+      lineinfile:
+        path: /etc/postgresql/16/main/pg_hba.conf
+        insertafter: "# TYPE  DATABASE        USER            ADDRESS                 METHOD"
+        line: "local   all             myuser                                scram-sha-256"
+        state: present
+
+    - name: allow univ VMs to access db
+      lineinfile:
+        path: /etc/postgresql/16/main/pg_hba.conf
+        insertafter: "# TYPE  DATABASE        USER            ADDRESS                 METHOD"
+        line: "host    mydb            myuser         192.168.246.0/24         scram-sha-256"
+        state: present
+
+    - name: allow univ VMs to access db
+      lineinfile:
+        path: /etc/postgresql/16/main/postgresql.conf
+        regexp: '^listen_addresses\s*=.*$'
+        line: "listen_addresses = '*'"
+        state: present
+      notify: restart postgres
+
+  handlers:
+    - name: restart postgres
+      command: sudo systemctl restart postgresql
